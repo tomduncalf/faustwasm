@@ -13,22 +13,32 @@ export interface IFaustDspInstance {
     compute($dsp: number, count: number, $inputs: number, $output: number): void;
 
     /**
+     * The dsp computation, to be called with successive input/output audio buffers.
+     *
+     * @param $dsp - the DSP pointer
+    //  * @param slice - the audio buffer size in frames
+     * @param $inputs - the input audio buffer as in index in wasm memory
+     * @param $output - the output audio buffer as in index in wasm memory
+     */
+    computeSlice($dsp: number, offset: number, slice: number, $inputs: number, $output: number): void;
+
+    /**
      * Give the number of inputs of a Faust wasm instance.
-     * 
+     *
      * @param $dsp - the DSP pointer
      */
     getNumInputs($dsp: number): number;
 
     /**
      * Give the number of outputs of a Faust wasm instance.
-     * 
+     *
      * @param $dsp - the DSP pointer
      */
     getNumOutputs($dsp: number): number;
 
     /**
      * Give a parameter current value.
-     * 
+     *
      * @param $dsp - the DSP pointer
      * @param index - the parameter index
      * @preturn the parameter value
@@ -37,7 +47,7 @@ export interface IFaustDspInstance {
 
     /**
      * Give the Faust wasm instance sample rate.
-     * 
+     *
      * @param $dsp - the DSP pointer
      * @preturn the sample rate
      */
@@ -54,34 +64,34 @@ export interface IFaustDspInstance {
     init($dsp: number, sampleRate: number): void;
 
     /** Init instance state (delay lines...).
-     * 
+     *
      * @param $dsp - the DSP pointer
      */
     instanceClear($dsp: number): void;
 
     /** Init instance constant state.
-     * 
+     *
      * @param $dsp - the DSP pointer
      * @param sampleRate - the sampling rate in Hertz
      */
     instanceConstants($dsp: number, sampleRate: number): void;
 
     /** Init instance state.
-     * 
+     *
      * @param $dsp - the DSP pointer
      * @param sampleRate - the sampling rate in Hertz
      */
     instanceInit($dsp: number, sampleRate: number): void;
 
     /** Init default control parameters values.
-     * 
+     *
      * @param $dsp - the DSP pointer
      */
     instanceResetUserInterface($dsp: number): void;
 
     /**
      * Set a parameter current value.
-     * 
+     *
      * @param $dsp - the DSP pointer
      * @param index - the parameter index
      * @param value - the parameter value
@@ -126,6 +136,7 @@ class FaustDspInstance implements IFaustDspInstance {
     constructor(exports: IFaustDspInstance) { this.fExports = exports; }
 
     compute($dsp: number, count: number, $input: number, $output: number) { this.fExports.compute($dsp, count, $input, $output); }
+    computeSlice($dsp: number, offset: number, slice: number, $input: number, $output: number) { this.fExports.computeSlice($dsp, offset, slice, $input, $output); }
     getNumInputs($dsp: number) { return this.fExports.getNumInputs($dsp); }
     getNumOutputs($dsp: number) { return this.fExports.getNumOutputs($dsp); }
     getParamValue($dsp: number, index: number) { return this.fExports.getParamValue($dsp, index); }

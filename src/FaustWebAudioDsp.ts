@@ -13,7 +13,7 @@ export type UIHandler = (item: FaustUIItem) => void;
 /**
  * DSP implementation: mimic the C++ 'dsp' class:
  * - adding MIDI control: metadata are decoded and incoming MIDI messages will control the associated controllers
- * - an output handler can be set to treat produced output controllers (like 'bargraph') 
+ * - an output handler can be set to treat produced output controllers (like 'bargraph')
  * - regular controllers are handled using setParamValue/getParamValue
  */
 export interface IFaustBaseWebAudioDsp {
@@ -554,7 +554,7 @@ this.fDSP: ${this.fDSP}`;
                 const dspOutput = this.fOutChannels[chan];
                 output[chan].set(dspOutput);
             }
-            // PlotHandler handling 
+            // PlotHandler handling
             if (this.fPlotHandler) {
                 this.fPlotHandler(output, this.fBufferNum++, (this.fCachedEvents.length ? this.fCachedEvents : undefined));
                 this.fCachedEvents = [];
@@ -608,6 +608,10 @@ export class FaustWebAudioDspVoice {
     private fVelFun: TransformFunction;
     // Accessed by PolyDSPImp class
     fCurNote: number;
+    // The timestamp at which the next note start/end should occur. If 0, then it should
+    // start immediately. If `undefined`, no note start/end is queued.
+    fNoteStartTimestamp: number | undefined;
+    fNoteEndTimestamp: number | undefined;
     fNextNote: number;
     fNextVel: number;
     fDate: number;
@@ -626,6 +630,8 @@ export class FaustWebAudioDspVoice {
         this.fKeyFun = (pitch: number) => FaustWebAudioDspVoice.midiToFreq(pitch);
         this.fVelFun = (velocity: number) => velocity / 127.0;
         this.fCurNote = FaustWebAudioDspVoice.kFreeVoice;
+        this.fNoteStartTimestamp = undefined;
+        this.fNoteEndTimestamp = undefined;
         this.fNextNote = this.fNextVel = -1;
         this.fLevel = 0;
         this.fDate = this.fRelease = 0;
@@ -661,7 +667,11 @@ export class FaustWebAudioDspVoice {
     }
 
     // Public API
-    keyOn(pitch: number, velocity: number, legato: boolean = false) {
+
+    keyOn(pitch: number, velocity: number, legato: boolean = false, timestamp: number = 0) {
+        // console.log(timestamp);
+        this.fNoteStartTimestamp = timestamp;
+
         if (legato) {
             this.fNextNote = pitch;
             this.fNextVel = velocity;
@@ -674,7 +684,9 @@ export class FaustWebAudioDspVoice {
         }
     }
 
-    keyOff(hard: boolean = false) {
+    keyOff(hard: boolean = false, timestamp: number = 0) {
+        this.fNoteEndTimestamp = timestamp;
+
         this.fGateLabel.forEach(index => this.fAPI.setParamValue(this.fDSP, index, 0));
         if (hard) {
             this.fCurNote = FaustWebAudioDspVoice.kFreeVoice;
@@ -706,6 +718,7 @@ export class FaustWebAudioDspVoice {
     }
 
     setParamValue(index: number, value: number) {
+        // console.log(3, index,value);
         this.fAPI.setParamValue(this.fDSP, index, value);
     }
     getParamValue(index: number) {
@@ -721,8 +734,11 @@ export class FaustPolyWebAudioDsp extends FaustBaseWebAudioDsp implements IFaust
     private fAudioMixing!: number;
     private fAudioMixingHalf!: number;
     private fVoiceTable: FaustWebAudioDspVoice[];
+    private scheduledEvents: any[];
+    private originalMixingBufferPointers: number[];
+    private originalOutputBufferPointers: number[];
 
-    constructor(instance: FaustPolyDspInstance, sampleRate: number, sampleSize: number, bufferSize: number) {
+    constructor(instance: FaustPolyDspInstance, sampleRate: number, sampleSize: number, bufferSize: number, private processor: any) {
         super(sampleSize, bufferSize);
         this.fInstance = instance;
 
@@ -752,11 +768,13 @@ export class FaustPolyWebAudioDsp extends FaustBaseWebAudioDsp implements IFaust
 
         // Init effect
         if (this.fInstance.effectAPI) this.fInstance.effectAPI.init(this.fEffect, sampleRate);
+
+        this.scheduledEvents = [];
     }
 
     private initMemory() {
 
-        // Effet start at the end of all DSP voices
+        // Effect start at the end of all DSP voices
         this.fEffect = this.fJSONDsp.size * this.fInstance.voices;
 
         // Audio buffer start at the end of effect
@@ -787,11 +805,20 @@ export class FaustPolyWebAudioDsp extends FaustBaseWebAudioDsp implements IFaust
                 this.fInChannels[chan] = HEAPF.subarray(dspInChans[chan] >> Math.log2(this.gSampleSize), (dspInChans[chan] + this.fBufferSize * this.gSampleSize) >> Math.log2(this.gSampleSize));
             }
         }
+
+        this.originalMixingBufferPointers = [];
+        this.originalOutputBufferPointers = [];
+
         if (this.getNumOutputs() > 0) {
             for (let chan = 0; chan < this.getNumOutputs(); chan++) {
-                HEAP32[(this.fAudioOutputs >> 2) + chan] = $audioOutputs + this.fBufferSize * this.gSampleSize * chan;
-                HEAP32[(this.fAudioMixing >> 2) + chan] = $audioMixing + this.fBufferSize * this.gSampleSize * chan;
+                this.originalOutputBufferPointers[chan] = $audioOutputs + this.fBufferSize * this.gSampleSize * chan;
+                HEAP32[(this.fAudioOutputs >> 2) + chan] = this.originalOutputBufferPointers[chan];
+
+                this.originalMixingBufferPointers[chan] = $audioMixing + this.fBufferSize * this.gSampleSize * chan;
+                HEAP32[(this.fAudioMixing >> 2) + chan] = this.originalMixingBufferPointers[chan];
+
                 HEAP32[(this.fAudioMixingHalf >> 2) + chan] = $audioMixing + this.fBufferSize * this.gSampleSize * chan + this.fBufferSize / 2 * this.gSampleSize;
+
             }
             // Prepare Out buffer tables
             const dspOutChans = HEAP32.subarray(this.fAudioOutputs >> 2, (this.fAudioOutputs + this.getNumOutputs() * this.gPtrSize) >> 2);
@@ -799,6 +826,8 @@ export class FaustPolyWebAudioDsp extends FaustBaseWebAudioDsp implements IFaust
                 this.fOutChannels[chan] = HEAPF.subarray(dspOutChans[chan] >> Math.log2(this.gSampleSize), (dspOutChans[chan] + this.fBufferSize * this.gSampleSize) >> Math.log2(this.gSampleSize));
             }
         }
+
+        // TD: we can manipulate like // HEAP32[(this.fAudioMixing >> 2)] += 496;
     }
 
     toString() {
@@ -872,6 +901,8 @@ this.fAudioMixingHalf: ${this.fAudioMixingHalf}`;
 
     // Public API
     compute(input: Float32Array[], output: Float32Array[]) {
+        const HEAP = this.fInstance.memory.buffer;
+        const HEAP32 = new Int32Array(HEAP);
 
         // Check DSP state
         if (this.fDestroyed) return false;
@@ -904,27 +935,86 @@ this.fAudioMixingHalf: ${this.fAudioMixingHalf}`;
 
         // Compute
         this.fInstance.mixerAPI.clearOutput(this.fBufferSize, this.getNumOutputs(), this.fAudioOutputs);
-        this.fVoiceTable.forEach((voice) => {
-            if (voice.fCurNote === FaustWebAudioDspVoice.kLegatoVoice) {
-                // Play from current note and next note
-                voice.computeLegato(this.fBufferSize, this.fAudioInputs, this.fAudioMixing, this.fAudioMixingHalf);
-                // FadeOut on first half buffer
-                this.fInstance.mixerAPI.fadeOut(this.fBufferSize / 2, this.getNumOutputs(), this.fAudioMixing);
-                // Mix it in result
-                voice.fLevel = this.fInstance.mixerAPI.mixCheckVoice(this.fBufferSize, this.getNumOutputs(), this.fAudioMixing, this.fAudioOutputs);
-            } else if (voice.fCurNote !== FaustWebAudioDspVoice.kFreeVoice) {
-                // Compute current note
-                voice.compute(this.fBufferSize, this.fAudioInputs, this.fAudioMixing);
-                // Mix it in result
-                voice.fLevel = this.fInstance.mixerAPI.mixCheckVoice(this.fBufferSize, this.getNumOutputs(), this.fAudioMixing, this.fAudioOutputs);
-                // Check the level to possibly set the voice in kFreeVoice again
-                voice.fRelease -= this.fBufferSize;
-                if ((voice.fCurNote == FaustWebAudioDspVoice.kReleaseVoice) && ((voice.fLevel < FaustWebAudioDspVoice.VOICE_STOP_LEVEL) && (voice.fRelease < 0))) {
-                    voice.fCurNote = FaustWebAudioDspVoice.kFreeVoice;
+
+        const events = [...this.getEventsInCurrentFrame(), null];
+        if (events.length) {
+            // console.log(events, this.processor.getCurrentTime());
+        }
+        // const sliceBoundaries = [...events.map(e => e.sampleOffset), this.fBufferSize];
+        // const sliceBoundaries = [this.fBufferSize];
+        // console.log(sliceBoundaries)
+
+        // console.log('----')
+        for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
+            const event = events[eventIndex];
+
+            const sliceStart = eventIndex > 0 ? events[eventIndex - 1].sampleOffset : 0;
+            const sliceEnd = event === null ? this.fBufferSize : event.sampleOffset;
+            const sliceLength = sliceEnd - sliceStart;
+
+            // Offset the buffer pointers for this slice
+            if (sliceStart > 0) {
+                // console.log({sliceStart,sliceEnd,sliceLength})
+                for (let chan = 0; chan < this.getNumOutputs(); chan++) {
+                    HEAP32[(this.fAudioOutputs >> 2) + chan] = this.originalOutputBufferPointers[chan] + (sliceStart * this.gSampleSize);
+                    HEAP32[(this.fAudioMixing >> 2) + chan] = this.originalMixingBufferPointers[chan] + (sliceStart * this.gSampleSize);
                 }
             }
-        });
+
+            if (event && event.sampleOffset <0) {
+                console.log("negative event",event);
+            }
+
+            if (event && event.type === "NOTE_ON") {
+                this.keyOn(0, event.data.note, 1);
+            } else if (event && event.type === "NOTE_OFF") {
+                this.keyOff(0, event.data.note, 1);
+            } else if (event && event.type === "PARAMETER_CHANGE") {
+                this.setParamValue(event.data.path, event.data.value);
+            }
+
+            this.fVoiceTable.forEach((voice) => {
+                /*if (voice.fCurNote === FaustWebAudioDspVoice.kLegatoVoice) {
+                    // Play from current note and next note
+                    voice.computeLegato(this.fBufferSize, this.fAudioInputs, this.fAudioMixing, this.fAudioMixingHalf);
+                    // FadeOut on first half buffer
+                    this.fInstance.mixerAPI.fadeOut(this.fBufferSize / 2, this.getNumOutputs(), this.fAudioMixing);
+                    // Mix it in result
+                    voice.fLevel = this.fInstance.mixerAPI.mixCheckVoice(this.fBufferSize, this.getNumOutputs(), this.fAudioMixing, this.fAudioOutputs);
+                } else*/ if (voice.fCurNote !== FaustWebAudioDspVoice.kFreeVoice) {
+                    // If the note is waiting to start, and the onset occurs within this buffer
+                    /*if (voice.fNoteStartTimestamp !== undefined) {
+                        const endOfCurrentFrameSecs = this.processor.getCurrentTime() + (this.fBufferSize / this.processor.getSampleRate());
+
+                        if (endOfCurrentFrameSecs > voice.fNoteStartTimestamp) {
+                            const samplesUntilStart = (voice.fNoteStartTimestamp * this.processor.getSampleRate()) - (this.processor.getCurrentFrame());
+                            console.log(endOfCurrentFrameSecs, voice.fNoteStartTimestamp, this.processor.getCurrentTime(), this.processor.getCurrentFrame());
+                            console.log('start in ', samplesUntilStart);
+                            voice.fNoteStartTimestamp = undefined;
+                        }
+                    }*/
+
+                    // Compute current note
+                    voice.compute(sliceLength, this.fAudioInputs, this.fAudioMixing);
+
+                    // Mix it in result
+                    voice.fLevel = this.fInstance.mixerAPI.mixCheckVoice(sliceLength, this.getNumOutputs(), this.fAudioMixing, this.fAudioOutputs);
+                    // Check the level to possibly set the voice in kFreeVoice again
+                    voice.fRelease -= sliceLength;
+                    if ((voice.fCurNote == FaustWebAudioDspVoice.kReleaseVoice) && ((voice.fLevel < FaustWebAudioDspVoice.VOICE_STOP_LEVEL) && (voice.fRelease < 0))) {
+                        voice.fCurNote = FaustWebAudioDspVoice.kFreeVoice;
+                    }
+                }
+            });
+        }
+
         if (this.fInstance.effectAPI) this.fInstance.effectAPI.compute(this.fEffect, this.fBufferSize, this.fAudioOutputs, this.fAudioOutputs);
+
+        // Reset the buffer pointers
+        for (let chan = 0; chan < this.getNumOutputs(); chan++) {
+            HEAP32[(this.fAudioOutputs >> 2) + chan] = this.originalOutputBufferPointers[chan];
+            HEAP32[(this.fAudioMixing >> 2) + chan] = this.originalMixingBufferPointers[chan];
+        }
 
         // Update bargraph
         this.updateOutputs();
@@ -936,7 +1026,7 @@ this.fAudioMixingHalf: ${this.fAudioMixingHalf}`;
                 output[chan].set(dspOutput);
             }
 
-            // PlotHandler handling 
+            // PlotHandler handling
             if (this.fPlotHandler) {
                 this.fPlotHandler(output, this.fBufferNum++, (this.fCachedEvents.length ? this.fCachedEvents : undefined));
                 this.fCachedEvents = [];
@@ -950,6 +1040,36 @@ this.fAudioMixingHalf: ${this.fAudioMixingHalf}`;
     }
     getNumOutputs() {
         return this.fInstance.voiceAPI.getNumOutputs(0);
+    }
+
+    getEventsInCurrentFrame() {
+        const events: any[] = [];
+        const currentTime = this.processor.getCurrentTime();
+        const sampleRate = this.processor.getSampleRate();
+        const endOfCurrentFrameSecs = currentTime + (this.fBufferSize / sampleRate);
+
+        // console.log('----loop----');
+        // let i;
+        // for (i = 0; i < this.scheduledEvents.length; i++) {
+        while(this.scheduledEvents.length && this.scheduledEvents[0].time < endOfCurrentFrameSecs) {
+            const event = this.scheduledEvents[0];
+            // if (event.time < endOfCurrentFrameSecs) {
+                // console.log("dequeue event", event, {currentTime, endOfCurrentFrameSecs})
+                const enrichedEvent = this.scheduledEvents.shift();
+                enrichedEvent.sampleOffset = Math.round((event.time - currentTime) * sampleRate);
+                events.push(enrichedEvent);
+                // continue;
+            // } else {
+            //     console.log('break on ', event);
+            //     break;
+            // }
+        }
+
+        // for (let j = 0; j < i; j++) {
+        //     this.scheduledEvents.unshift();
+        // }
+
+        return events;
     }
 
     private static findPath(o: any, p: string) {
@@ -966,6 +1086,8 @@ this.fAudioMixingHalf: ${this.fAudioMixingHalf}`;
     }
 
     setParamValue(path: string, value: number) {
+        // console.log(2,path,value);//,new Error().stack)
+
         if (this.fPlotHandler) this.fCachedEvents.push({ type: "param", data: { path, value } });
         if (this.fJSONEffect && FaustPolyWebAudioDsp.findPath(this.fJSONEffect.ui, path) && this.fInstance.effectAPI) {
             this.fInstance.effectAPI.setParamValue(this.fEffect, this.fPathTable[path], value);
@@ -1012,13 +1134,14 @@ this.fAudioMixingHalf: ${this.fAudioMixingHalf}`;
 
     getDescriptors() { return this.fDescriptor; }
 
-    midiMessage(data: number[] | Uint8Array) {
+    midiMessage(data: number[] | Uint8Array, timestamp: number = 0) {
+        console.log("PLY MIDI")
         const cmd = data[0] >> 4;
         const channel = data[0] & 0xf;
         const data1 = data[1];
         const data2 = data[2];
-        if (cmd === 8 || (cmd === 9 && data2 === 0)) return this.keyOff(channel, data1, data2);
-        else if (cmd === 9) return this.keyOn(channel, data1, data2);
+        if (cmd === 8 || (cmd === 9 && data2 === 0)) return this.keyOff(channel, data1, data2, timestamp);
+        else if (cmd === 9) return this.keyOn(channel, data1, data2, timestamp);
         else super.midiMessage(data);
     };
 
@@ -1030,18 +1153,27 @@ this.fAudioMixingHalf: ${this.fAudioMixingHalf}`;
         }
     }
 
-    keyOn(channel: number, pitch: number, velocity: number) {
+    keyOn(channel: number, pitch: number, velocity: number, timestamp: number = 0) {
+        // console.log("KEY ON", timestamp);
         const voice = this.getFreeVoice();
-        this.fVoiceTable[voice].keyOn(pitch, velocity, this.fVoiceTable[voice].fCurNote == FaustWebAudioDspVoice.kLegatoVoice);
+        this.fVoiceTable[voice].keyOn(pitch, velocity, this.fVoiceTable[voice].fCurNote == FaustWebAudioDspVoice.kLegatoVoice, timestamp);
     }
 
-    keyOff(channel: number, pitch: number, velocity: number) {
+    keyOff(channel: number, pitch: number, velocity: number, timestamp: number = 0) {
         const voice = this.getPlayingVoice(pitch);
         if (voice !== FaustWebAudioDspVoice.kNoVoice) {
-            this.fVoiceTable[voice].keyOff();
+            this.fVoiceTable[voice].keyOff(false, timestamp);
         } else {
             console.log("Playing pitch = %d not found\n", pitch);
         }
+    }
+
+    scheduleEvent(event: any) {
+        console.log('scheudling event', event);
+        event.id = this.scheduledEvents.length;
+        this.scheduledEvents.push(event);
+        this.scheduledEvents.sort((a, b) => a.time - b.time);
+        // console.log('scheudling event', event, JSON.stringify(this.scheduledEvents));
     }
 
     allNotesOff(hard: boolean = true) {

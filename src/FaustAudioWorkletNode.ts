@@ -106,14 +106,14 @@ export class FaustAudioWorkletNode<Poly extends boolean = false> extends (global
         }
     }
 
-    midiMessage(data: number[] | Uint8Array): void {
+    midiMessage(data: number[] | Uint8Array, timestamp: number = 0): void {
         const cmd = data[0] >> 4;
         const channel = data[0] & 0xf;
         const data1 = data[1];
         const data2 = data[2];
         if (cmd === 11) this.ctrlChange(channel, data1, data2);
         else if (cmd === 14) this.pitchWheel(channel, data2 * 128.0 + data1);
-        else this.port.postMessage({ type: "midi", data: data });
+        else this.port.postMessage({ type: "midi", data: data, timestamp: timestamp });
     }
 
     ctrlChange(channel: number, ctrl: number, value: number) {
@@ -209,6 +209,11 @@ export class FaustPolyAudioWorkletNode extends FaustAudioWorkletNode<true> imple
         if (this.fJSONEffect) {
             FaustBaseWebAudioDsp.parseUI(this.fJSONEffect.ui, this.fUICallback);
         }
+    }
+
+    scheduleEvent(event: any) {
+        console.log("HELLO");
+        this.port.postMessage({ type: "scheduledEvent", data: event });
     }
 
     // Public API

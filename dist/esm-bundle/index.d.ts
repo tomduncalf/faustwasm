@@ -207,6 +207,15 @@ export interface IFaustDspInstance {
 	 */
 	compute($dsp: number, count: number, $inputs: number, $output: number): void;
 	/**
+	 * The dsp computation, to be called with successive input/output audio buffers.
+	 *
+	 * @param $dsp - the DSP pointer
+	//  * @param slice - the audio buffer size in frames
+	 * @param $inputs - the input audio buffer as in index in wasm memory
+	 * @param $output - the output audio buffer as in index in wasm memory
+	 */
+	computeSlice($dsp: number, offset: number, slice: number, $inputs: number, $output: number): void;
+	/**
 	 * Give the number of inputs of a Faust wasm instance.
 	 *
 	 * @param $dsp - the DSP pointer
@@ -305,6 +314,7 @@ export declare class FaustDspInstance implements IFaustDspInstance {
 	private readonly fExports;
 	constructor(exports: IFaustDspInstance);
 	compute($dsp: number, count: number, $input: number, $output: number): void;
+	computeSlice($dsp: number, offset: number, slice: number, $input: number, $output: number): void;
 	getNumInputs($dsp: number): number;
 	getNumOutputs($dsp: number): number;
 	getParamValue($dsp: number, index: number): number;
@@ -614,6 +624,8 @@ export declare class FaustWebAudioDspVoice {
 	private fKeyFun;
 	private fVelFun;
 	fCurNote: number;
+	fNoteStartTimestamp: number | undefined;
+	fNoteEndTimestamp: number | undefined;
 	fNextNote: number;
 	fNextVel: number;
 	fDate: number;
@@ -624,21 +636,25 @@ export declare class FaustWebAudioDspVoice {
 	}, sampleRate: number);
 	static midiToFreq(note: number): number;
 	private extractPaths;
-	keyOn(pitch: number, velocity: number, legato?: boolean): void;
-	keyOff(hard?: boolean): void;
+	keyOn(pitch: number, velocity: number, legato?: boolean, timestamp?: number): void;
+	keyOff(hard?: boolean, timestamp?: number): void;
 	computeLegato(bufferSize: number, $inputs: number, $outputZero: number, $outputsHalf: number): void;
 	compute(bufferSize: number, $inputs: number, $outputs: number): void;
 	setParamValue(index: number, value: number): void;
 	getParamValue(index: number): number;
 }
 export declare class FaustPolyWebAudioDsp extends FaustBaseWebAudioDsp implements IFaustPolyWebAudioDsp {
+	private processor;
 	private fInstance;
 	private fEffect;
 	private fJSONEffect;
 	private fAudioMixing;
 	private fAudioMixingHalf;
 	private fVoiceTable;
-	constructor(instance: FaustPolyDspInstance, sampleRate: number, sampleSize: number, bufferSize: number);
+	private scheduledEvents;
+	private originalMixingBufferPointers;
+	private originalOutputBufferPointers;
+	constructor(instance: FaustPolyDspInstance, sampleRate: number, sampleSize: number, bufferSize: number, processor: any);
 	private initMemory;
 	toString(): string;
 	private allocVoice;
@@ -647,6 +663,7 @@ export declare class FaustPolyWebAudioDsp extends FaustBaseWebAudioDsp implement
 	compute(input: Float32Array[], output: Float32Array[]): boolean;
 	getNumInputs(): number;
 	getNumOutputs(): number;
+	getEventsInCurrentFrame(): any[];
 	private static findPath;
 	setParamValue(path: string, value: number): void;
 	getParamValue(path: string): number;
@@ -654,10 +671,11 @@ export declare class FaustPolyWebAudioDsp extends FaustBaseWebAudioDsp implement
 	getJSON(): string;
 	getUI(): FaustUIDescriptor;
 	getDescriptors(): FaustUIInputItem[];
-	midiMessage(data: number[] | Uint8Array): void;
+	midiMessage(data: number[] | Uint8Array, timestamp?: number): void;
 	ctrlChange(channel: number, ctrl: number, value: number): void;
-	keyOn(channel: number, pitch: number, velocity: number): void;
-	keyOff(channel: number, pitch: number, velocity: number): void;
+	keyOn(channel: number, pitch: number, velocity: number, timestamp?: number): void;
+	keyOff(channel: number, pitch: number, velocity: number, timestamp?: number): void;
+	scheduleEvent(event: any): void;
 	allNotesOff(hard?: boolean): void;
 }
 /**
@@ -916,7 +934,7 @@ export declare class FaustAudioWorkletNode<Poly extends boolean = false> extends
 	getNumOutputs(): number;
 	compute(inputs: Float32Array[], outputs: Float32Array[]): boolean;
 	metadata(handler: MetadataHandler): void;
-	midiMessage(data: number[] | Uint8Array): void;
+	midiMessage(data: number[] | Uint8Array, timestamp?: number): void;
 	ctrlChange(channel: number, ctrl: number, value: number): void;
 	pitchWheel(channel: number, wheel: number): void;
 	setParamValue(path: string, value: number): void;
@@ -944,6 +962,7 @@ export declare class FaustPolyAudioWorkletNode extends FaustAudioWorkletNode<tru
 	private fJSONEffect;
 	onprocessorerror: (e: Event) => never;
 	constructor(context: BaseAudioContext, name: string, voiceFactory: LooseFaustDspFactory, mixerModule: WebAssembly.Module, voices: number, sampleSize: number, effectFactory?: LooseFaustDspFactory);
+	scheduleEvent(event: any): void;
 	keyOn(channel: number, pitch: number, velocity: number): void;
 	keyOff(channel: number, pitch: number, velocity: number): void;
 	allNotesOff(hard: boolean): void;

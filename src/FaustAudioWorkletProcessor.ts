@@ -53,7 +53,7 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
         FaustBaseWebAudioDsp,
         FaustWasmInstantiator
     } = dependencies;
-    
+
     const {
         dspName,
         dspMeta,
@@ -99,20 +99,21 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
         process(inputs: Float32Array[][], outputs: Float32Array[][], parameters: { [key: string]: Float32Array }) {
 
             // Update controls (possibly needed for sample accurate control)
-            for (const path in parameters) {
-                const paramArray = parameters[path];
-                this.fDSPCode.setParamValue(path, paramArray[0]);
-            }
+            // for (const path in parameters) {
+            //     const paramArray = parameters[path];
+            //     this.fDSPCode.setParamValue(path, paramArray[0]);
+            // }
 
             return this.fDSPCode.compute(inputs[0], outputs[0]);
         }
 
         protected handleMessageAux(e: MessageEvent) { // use arrow function for binding
             const msg = e.data;
+            console.log('asasdas', this, e)
 
             switch (msg.type) {
                 // Generic MIDI message
-                case "midi": this.midiMessage(msg.data); break;
+                case "midi": this.midiMessage(msg.data, msg.timestamp); break;
                 // Typed MIDI message
                 case "ctrlChange": this.ctrlChange(msg.data[0], msg.data[1], msg.data[2]); break;
                 case "pitchWheel": this.pitchWheel(msg.data[0], msg.data[1]); break;
@@ -152,7 +153,7 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
             this.fDSPCode.setParamValue(path, value);
         }
 
-        protected midiMessage(data: number[] | Uint8Array) {
+        protected midiMessage(data: number[] | Uint8Array, timestamp: number = 0) {
             this.fDSPCode.midiMessage(data);
         }
 
@@ -199,7 +200,7 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
 
             const instance = FaustWasmInstantiator.createSyncPolyDSPInstance(voiceFactory, mixerModule, voices, effectFactory);
             // Create Polyphonic DSP
-            this.fDSPCode = new FaustWebAudioPolyDSP(instance, sampleRate, sampleSize, 128);
+            this.fDSPCode = new FaustWebAudioPolyDSP(instance, sampleRate, sampleSize, 128, this);
 
             // Setup port message handling
             this.port.onmessage = (e: MessageEvent) => this.handleMessageAux(e);
@@ -210,13 +211,31 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
             this.fDSPCode.start();
         }
 
-        protected midiMessage(data: number[] | Uint8Array) {
+        getCurrentTime() {
+            /* @ts-ignore */
+            // console.log(currentTime);
+            /* @ts-ignore */
+            return currentTime;
+        }
+
+        getCurrentFrame() {
+            /* @ts-ignore */
+            return currentFrame;
+        }
+
+        getSampleRate() {
+            /* @ts-ignore */
+            return sampleRate;
+        }
+
+        protected midiMessage(data: number[] | Uint8Array, timestamp: number = 0) {
+            console.log('MIDI', timestamp, this.fDSPCode.keyOn, this.fDSPCode.keyOn.toString());
             const cmd = data[0] >> 4;
             const channel = data[0] & 0xf;
             const data1 = data[1];
             const data2 = data[2];
-            if (cmd === 8 || (cmd === 9 && data2 === 0)) this.keyOff(channel, data1, data2);
-            else if (cmd === 9) this.keyOn(channel, data1, data2);
+            if (cmd === 8 || (cmd === 9 && data2 === 0)) this.keyOff(channel, data1, data2, timestamp);
+            else if (cmd === 9) this.keyOn(channel, data1, data2, timestamp);
             else super.midiMessage(data);
         }
 
@@ -225,6 +244,7 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
             switch (msg.type) {
                 case "keyOn": this.keyOn(msg.data[0], msg.data[1], msg.data[2]); break;
                 case "keyOff": this.keyOff(msg.data[0], msg.data[1], msg.data[2]); break;
+                case "scheduledEvent": this.fDSPCode.scheduleEvent(msg.data); break;
                 default:
                     super.handleMessageAux(e);
                     break;
@@ -232,12 +252,12 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
         }
 
         // Public API
-        keyOn(channel: number, pitch: number, velocity: number) {
-            this.fDSPCode.keyOn(channel, pitch, velocity);
+        keyOn(channel: number, pitch: number, velocity: number, timestamp: number = 0) {
+            this.fDSPCode.keyOn(channel, pitch, velocity, timestamp);
         }
 
-        keyOff(channel: number, pitch: number, velocity: number) {
-            this.fDSPCode.keyOff(channel, pitch, velocity);
+        keyOff(channel: number, pitch: number, velocity: number, timestamp: number = 0) {
+            this.fDSPCode.keyOff(channel, pitch, velocity, timestamp);
         }
 
         allNotesOff(hard: boolean) {
