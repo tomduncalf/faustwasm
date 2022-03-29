@@ -11,7 +11,7 @@ import type { FaustDspFactory, FaustDspMeta, LooseFaustDspFactory } from "./type
 export interface IFaustMonoDspGenerator {
     /**
      * Compile a monophonic DSP factory from given code.
-     * 
+     *
      * @param compiler - the Faust compiler
      * @param name - the DSP name
      * @param code - the DSP code
@@ -31,7 +31,7 @@ export interface IFaustMonoDspGenerator {
      * @param name - AudioWorklet Processor name
      * @param factory - default is the compiled factory
      * @param sp - whether to compile a ScriptProcessorNode or an AudioWorkletNode
-     * @param bufferSize - the buffer size in frames to be used in ScriptProcessorNode only, since AudioWorkletNode always uses 128 frames  
+     * @param bufferSize - the buffer size in frames to be used in ScriptProcessorNode only, since AudioWorkletNode always uses 128 frames
      * @returns the compiled WebAudio node or 'null' if failure
     */
     createNode(
@@ -56,7 +56,7 @@ export interface IFaustMonoDspGenerator {
 export interface IFaustPolyDspGenerator {
     /**
      * Compile a monophonic DSP factory from given code.
-     * 
+     *
      * @param compiler - the Faust compiler
      * @param name - the DSP name
      * @param dspCode - the DSP code ('dsp_code' can possibly contain an integrated effect)
@@ -239,7 +239,8 @@ process = adaptor(dsp_code.process, dsp_code.effect) : dsp_code.effect;`
         const sampleSize = voiceMeta.compile_options.match("-double") ? 8 : 4;
         if (sp) {
             const instance = await FaustWasmInstantiator.createAsyncPolyDSPInstance(voiceFactory, mixerModule, voices, effectFactory || undefined);
-            const polyDsp = new FaustPolyWebAudioDsp(instance, context.sampleRate, sampleSize, bufferSize);
+            // TODO
+            const polyDsp = new FaustPolyWebAudioDsp(instance, context.sampleRate, sampleSize, bufferSize, {} as any);
             const sp = context.createScriptProcessor(bufferSize, polyDsp.getNumInputs(), polyDsp.getNumOutputs()) as FaustPolyScriptProcessorNode;
             Object.setPrototypeOf(sp, FaustPolyScriptProcessorNode.prototype);
             sp.init(polyDsp);
