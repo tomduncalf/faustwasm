@@ -1,6 +1,7 @@
 import { OutputParamHandler, ComputeHandler, PlotHandler, UIHandler, MetadataHandler, FaustBaseWebAudioDsp, IFaustMonoWebAudioDsp, IFaustPolyWebAudioDsp } from "./FaustWebAudioDsp";
 import type { FaustAudioWorkletNodeOptions } from "./FaustAudioWorkletProcessor";
 import type { LooseFaustDspFactory, FaustDspMeta, FaustUIInputItem, FaustUIItem } from "./types";
+import { FaustScheduledEvent } from ".";
 
 /**
  * Base class for Monophonic and Polyphonic AudioWorkletNode
@@ -114,6 +115,10 @@ export class FaustAudioWorkletNode<Poly extends boolean = false> extends (global
         if (cmd === 11) this.ctrlChange(channel, data1, data2);
         else if (cmd === 14) this.pitchWheel(channel, data2 * 128.0 + data1);
         else this.port.postMessage({ type: "midi", data: data });
+    }
+
+    scheduleEvent(event: FaustScheduledEvent) {
+        this.port.postMessage({ type: "scheduledEvent", data: event });
     }
 
     ctrlChange(channel: number, ctrl: number, value: number) {

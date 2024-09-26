@@ -39,7 +39,7 @@ export interface FaustWasm {
 export interface LibFaustWasm {
     /**
      * Return the Faust compiler version.
-     * 
+     *
      * @returns the version
      */
     version(): string;
@@ -106,7 +106,7 @@ export interface LibFaustWasm {
 
 /**
  * The Factory structure.
- * cfactory: a "pointer" (as an integer) on the internal C++ factory 
+ * cfactory: a "pointer" (as an integer) on the internal C++ factory
  * code: the WASM code as a binary array
  * module: the compule WASM module
  * json: the compiled DSP JSON description
@@ -134,6 +134,35 @@ export interface FaustDspMeta {
     library_list: string[];
     meta: { [key: string]: string }[];
     ui: FaustUIDescriptor;
+}
+
+interface FaustScheduledEventBase {
+    type: 'NOTE_ON' | 'NOTE_OFF' | 'PARAMETER_CHANGE';
+    time: number;
+}
+
+interface FaustScheduledNoteEvent extends FaustScheduledEventBase {
+    type: 'NOTE_ON' | 'NOTE_OFF';
+    data: {
+        pitch: number;
+        velocity: number;
+    }
+}
+
+interface FaustScheduledParameterChangeEvent extends FaustScheduledEventBase {
+    type: 'PARAMETER_CHANGE';
+    data: {
+        path: string;
+        value: number;
+    }
+}
+
+export type FaustScheduledEvent = FaustScheduledNoteEvent | FaustScheduledParameterChangeEvent;
+
+export interface FaustAudioWorkletProcessorBase {
+    getCurrentTime(): number;
+    getCurrentFrame(): number;
+    getSampleRate(): number;
 }
 
 export type FaustUIDescriptor = FaustUIGroup[];

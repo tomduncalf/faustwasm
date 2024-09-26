@@ -1,3 +1,4 @@
+import { FaustAudioWorkletProcessorBase } from ".";
 import type FaustWasmInstantiator from "./FaustWasmInstantiator";
 import type { FaustBaseWebAudioDsp, FaustWebAudioDspVoice, FaustMonoWebAudioDsp, FaustPolyWebAudioDsp } from "./FaustWebAudioDsp";
 import type { AudioParamDescriptor, AudioWorkletGlobalScope, LooseFaustDspFactory, FaustDspMeta, FaustUIItem } from "./types";
@@ -53,7 +54,7 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
         FaustBaseWebAudioDsp,
         FaustWasmInstantiator
     } = dependencies;
-    
+
     const {
         dspName,
         dspMeta,
@@ -99,10 +100,10 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
         process(inputs: Float32Array[][], outputs: Float32Array[][], parameters: { [key: string]: Float32Array }) {
 
             // Update controls (possibly needed for sample accurate control)
-            for (const path in parameters) {
+            /*for (const path in parameters) {
                 const paramArray = parameters[path];
                 this.fDSPCode.setParamValue(path, paramArray[0]);
-            }
+            }*/
 
             return this.fDSPCode.compute(inputs[0], outputs[0]);
         }
@@ -189,7 +190,7 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
     /**
      * Polyphonic AudioWorkletProcessor
      */
-    class FaustPolyAudioWorkletProcessor extends FaustAudioWorkletProcessor<true> {
+    class FaustPolyAudioWorkletProcessor extends FaustAudioWorkletProcessor<true> implements FaustAudioWorkletProcessorBase {
 
         constructor(options: FaustPolyAudioWorkletNodeOptions) {
             super(options);
@@ -199,7 +200,7 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
 
             const instance = FaustWasmInstantiator.createSyncPolyDSPInstance(voiceFactory, mixerModule, voices, effectFactory);
             // Create Polyphonic DSP
-            this.fDSPCode = new FaustWebAudioPolyDSP(instance, sampleRate, sampleSize, 128);
+            this.fDSPCode = new FaustWebAudioPolyDSP(instance, sampleRate, sampleSize, 128, this);
 
             // Setup port message handling
             this.port.onmessage = (e: MessageEvent) => this.handleMessageAux(e);
@@ -225,6 +226,7 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
             switch (msg.type) {
                 case "keyOn": this.keyOn(msg.data[0], msg.data[1], msg.data[2]); break;
                 case "keyOff": this.keyOff(msg.data[0], msg.data[1], msg.data[2]); break;
+                case "scheduledEvent": this.fDSPCode.scheduleEvent(msg.data); break;
                 default:
                     super.handleMessageAux(e);
                     break;
@@ -242,6 +244,21 @@ const getFaustAudioWorkletProcessor = <Poly extends boolean = false>(dependencie
 
         allNotesOff(hard: boolean) {
             this.fDSPCode.allNotesOff(hard);
+        }
+
+        getCurrentTime() {
+            /* @ts-ignore */
+            return currentTime;
+        }
+
+        getCurrentFrame() {
+            /* @ts-ignore */
+            return currentFrame;
+        }
+
+        getSampleRate() {
+            /* @ts-ignore */
+            return sampleRate;
         }
     }
 

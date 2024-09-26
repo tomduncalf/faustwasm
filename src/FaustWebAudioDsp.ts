@@ -1,3 +1,4 @@
+import { FaustAudioWorkletProcessorBase, FaustScheduledEvent } from ".";
 import type { FaustMonoDspInstance, FaustPolyDspInstance, IFaustDspInstance } from "./FaustDspInstance";
 import type { FaustDspMeta, FaustUIDescriptor, FaustUIGroup, FaustUIInputItem, FaustUIItem } from "./types";
 
@@ -13,7 +14,7 @@ export type UIHandler = (item: FaustUIItem) => void;
 /**
  * DSP implementation: mimic the C++ 'dsp' class:
  * - adding MIDI control: metadata are decoded and incoming MIDI messages will control the associated controllers
- * - an output handler can be set to treat produced output controllers (like 'bargraph') 
+ * - an output handler can be set to treat produced output controllers (like 'bargraph')
  * - regular controllers are handled using setParamValue/getParamValue
  */
 export interface IFaustBaseWebAudioDsp {
@@ -554,7 +555,7 @@ this.fDSP: ${this.fDSP}`;
                 const dspOutput = this.fOutChannels[chan];
                 output[chan].set(dspOutput);
             }
-            // PlotHandler handling 
+            // PlotHandler handling
             if (this.fPlotHandler) {
                 this.fPlotHandler(output, this.fBufferNum++, (this.fCachedEvents.length ? this.fCachedEvents : undefined));
                 this.fCachedEvents = [];
@@ -722,9 +723,17 @@ export class FaustPolyWebAudioDsp extends FaustBaseWebAudioDsp implements IFaust
     private fAudioMixingHalf!: number;
     private fVoiceTable: FaustWebAudioDspVoice[];
 
-    constructor(instance: FaustPolyDspInstance, sampleRate: number, sampleSize: number, bufferSize: number) {
+    private $audioOutputs: number;
+    private $audioMixing: number;
+
+    // Keep a reference to the processor that created this DSP so we can get info from the AudioWorkletGlobalScope
+    private processor: FaustAudioWorkletProcessorBase;
+    private scheduledEvents: FaustScheduledEvent[] = [];
+
+    constructor(instance: FaustPolyDspInstance, sampleRate: number, sampleSize: number, bufferSize: number, processor: FaustAudioWorkletProcessorBase) {
         super(sampleSize, bufferSize);
         this.fInstance = instance;
+        this.processor = processor;
 
         // Create JSON for voice
         this.fJSONDsp = JSON.parse(this.fInstance.voiceJSON);
@@ -770,12 +779,10 @@ export class FaustPolyWebAudioDsp extends FaustBaseWebAudioDsp implements IFaust
 
         // Prepare wasm memory layout
         const $audioInputs = this.fAudioMixingHalf + this.getNumOutputs() * this.gPtrSize;
-        const $audioOutputs = $audioInputs + this.getNumInputs() * this.fBufferSize * this.gSampleSize;
-        const $audioMixing = $audioOutputs + this.getNumOutputs() * this.fBufferSize * this.gSampleSize;
+        this.$audioOutputs = $audioInputs + this.getNumInputs() * this.fBufferSize * this.gSampleSize;
+        this.$audioMixing = this.$audioOutputs + this.getNumOutputs() * this.fBufferSize * this.gSampleSize;
 
-        const HEAP = this.fInstance.memory.buffer;
-        const HEAP32 = new Int32Array(HEAP);
-        const HEAPF = (this.gSampleSize === 4) ? new Float32Array(HEAP) : new Float64Array(HEAP);
+        const { HEAP32, HEAPF } = this.getHeap();
 
         if (this.getNumInputs() > 0) {
             for (let chan = 0; chan < this.getNumInputs(); chan++) {
@@ -788,16 +795,39 @@ export class FaustPolyWebAudioDsp extends FaustBaseWebAudioDsp implements IFaust
             }
         }
         if (this.getNumOutputs() > 0) {
-            for (let chan = 0; chan < this.getNumOutputs(); chan++) {
-                HEAP32[(this.fAudioOutputs >> 2) + chan] = $audioOutputs + this.fBufferSize * this.gSampleSize * chan;
-                HEAP32[(this.fAudioMixing >> 2) + chan] = $audioMixing + this.fBufferSize * this.gSampleSize * chan;
-                HEAP32[(this.fAudioMixingHalf >> 2) + chan] = $audioMixing + this.fBufferSize * this.gSampleSize * chan + this.fBufferSize / 2 * this.gSampleSize;
-            }
+            this.initOutputBufferPointers();
+
             // Prepare Out buffer tables
             const dspOutChans = HEAP32.subarray(this.fAudioOutputs >> 2, (this.fAudioOutputs + this.getNumOutputs() * this.gPtrSize) >> 2);
             for (let chan = 0; chan < this.getNumOutputs(); chan++) {
                 this.fOutChannels[chan] = HEAPF.subarray(dspOutChans[chan] >> Math.log2(this.gSampleSize), (dspOutChans[chan] + this.fBufferSize * this.gSampleSize) >> Math.log2(this.gSampleSize));
             }
+        }
+    }
+
+    private getHeap() {
+        const HEAP = this.fInstance.memory.buffer;
+        const HEAP32 = new Int32Array(HEAP);
+        const HEAPF = (this.gSampleSize === 4) ? new Float32Array(HEAP) : new Float64Array(HEAP);
+
+        return { HEAP, HEAP32, HEAPF };
+    }
+
+    /**
+     * Initialise the pointers in the WASM memory to the output buffers.
+     *
+     * `offsetSamples` allows the destination address to be offset by a
+     * number of samples, so that we can write into the middle of the current
+     * buffer when working with partial (sliced) buffers for sample-accuracy.
+     */
+    private initOutputBufferPointers(offsetSamples: number = 0) {
+        const { HEAP32 } = this.getHeap();
+        const offset = offsetSamples * this.gSampleSize;
+
+        for (let chan = 0; chan < this.getNumOutputs(); chan++) {
+            HEAP32[(this.fAudioOutputs >> 2) + chan] = (this.$audioOutputs + this.fBufferSize * this.gSampleSize * chan) + offset;
+            HEAP32[(this.fAudioMixing >> 2) + chan] = (this.$audioMixing + this.fBufferSize * this.gSampleSize * chan) + offset;
+            HEAP32[(this.fAudioMixingHalf >> 2) + chan] = (this.$audioMixing + this.fBufferSize * this.gSampleSize * chan + this.fBufferSize / 2 * this.gSampleSize) + offset;
         }
     }
 
@@ -904,27 +934,59 @@ this.fAudioMixingHalf: ${this.fAudioMixingHalf}`;
 
         // Compute
         this.fInstance.mixerAPI.clearOutput(this.fBufferSize, this.getNumOutputs(), this.fAudioOutputs);
-        this.fVoiceTable.forEach((voice) => {
-            if (voice.fCurNote === FaustWebAudioDspVoice.kLegatoVoice) {
-                // Play from current note and next note
-                voice.computeLegato(this.fBufferSize, this.fAudioInputs, this.fAudioMixing, this.fAudioMixingHalf);
-                // FadeOut on first half buffer
-                this.fInstance.mixerAPI.fadeOut(this.fBufferSize / 2, this.getNumOutputs(), this.fAudioMixing);
-                // Mix it in result
-                voice.fLevel = this.fInstance.mixerAPI.mixCheckVoice(this.fBufferSize, this.getNumOutputs(), this.fAudioMixing, this.fAudioOutputs);
-            } else if (voice.fCurNote !== FaustWebAudioDspVoice.kFreeVoice) {
-                // Compute current note
-                voice.compute(this.fBufferSize, this.fAudioInputs, this.fAudioMixing);
-                // Mix it in result
-                voice.fLevel = this.fInstance.mixerAPI.mixCheckVoice(this.fBufferSize, this.getNumOutputs(), this.fAudioMixing, this.fAudioOutputs);
-                // Check the level to possibly set the voice in kFreeVoice again
-                voice.fRelease -= this.fBufferSize;
-                if ((voice.fCurNote == FaustWebAudioDspVoice.kReleaseVoice) && ((voice.fLevel < FaustWebAudioDspVoice.VOICE_STOP_LEVEL) && (voice.fRelease < 0))) {
-                    voice.fCurNote = FaustWebAudioDspVoice.kFreeVoice;
-                }
+
+        const events = this.getEventsInCurrentFrame();
+
+        // <= events.length so we always do one iteration even if there are no events in this buffer
+        for (let eventIndex = 0; eventIndex <= events.length; eventIndex++) {
+            const event = eventIndex < events.length ? events[eventIndex] : null;
+
+            const sliceStart = eventIndex > 0 ? events[eventIndex - 1].sampleOffset : 0;
+            const sliceEnd = event === null ? this.fBufferSize : event.sampleOffset;
+            const sliceLength = sliceEnd - sliceStart;
+
+            // If the start of this slice is offset, update the output pointers accordingly
+            if (sliceStart > 0) {
+                this.initOutputBufferPointers(sliceStart);
             }
-        });
+
+            // Update the audio engine state for this slice before we render
+            if (event && event.event.type === "NOTE_ON") {
+                this.keyOn(0, event.event.data.pitch, event.event.data.velocity);
+            } else if (event && event.event.type === "NOTE_OFF") {
+                this.keyOff(0, event.event.data.pitch, event.event.data.velocity);
+            } else if (event && event.event.type === "PARAMETER_CHANGE") {
+                this.setParamValue(event.event.data.path, event.event.data.value);
+            }
+
+            this.fVoiceTable.forEach((voice) => {
+                if (voice.fCurNote === FaustWebAudioDspVoice.kLegatoVoice) {
+                    // Play from current note and next note
+                    voice.computeLegato(sliceLength, this.fAudioInputs, this.fAudioMixing, this.fAudioMixingHalf);
+                    // FadeOut on first half buffer
+                    this.fInstance.mixerAPI.fadeOut(sliceLength / 2, this.getNumOutputs(), this.fAudioMixing);
+                    // Mix it in result
+                    voice.fLevel = this.fInstance.mixerAPI.mixCheckVoice(sliceLength, this.getNumOutputs(), this.fAudioMixing, this.fAudioOutputs);
+                } else if (voice.fCurNote !== FaustWebAudioDspVoice.kFreeVoice) {
+                    // Compute current note
+                    voice.compute(sliceLength, this.fAudioInputs, this.fAudioMixing);
+                    // Mix it in result
+                    voice.fLevel = this.fInstance.mixerAPI.mixCheckVoice(sliceLength, this.getNumOutputs(), this.fAudioMixing, this.fAudioOutputs);
+                    // Check the level to possibly set the voice in kFreeVoice again
+                    voice.fRelease -= sliceLength;
+                    if ((voice.fCurNote == FaustWebAudioDspVoice.kReleaseVoice) && ((voice.fLevel < FaustWebAudioDspVoice.VOICE_STOP_LEVEL) && (voice.fRelease < 0))) {
+                        voice.fCurNote = FaustWebAudioDspVoice.kFreeVoice;
+                    }
+                }
+            });
+        }
+
         if (this.fInstance.effectAPI) this.fInstance.effectAPI.compute(this.fEffect, this.fBufferSize, this.fAudioOutputs, this.fAudioOutputs);
+
+        // If we processed an event, we might need to reset the output pointers
+        if (events.length > 0) {
+            this.initOutputBufferPointers();
+        }
 
         // Update bargraph
         this.updateOutputs();
@@ -936,7 +998,7 @@ this.fAudioMixingHalf: ${this.fAudioMixingHalf}`;
                 output[chan].set(dspOutput);
             }
 
-            // PlotHandler handling 
+            // PlotHandler handling
             if (this.fPlotHandler) {
                 this.fPlotHandler(output, this.fBufferNum++, (this.fCachedEvents.length ? this.fCachedEvents : undefined));
                 this.fCachedEvents = [];
@@ -950,6 +1012,27 @@ this.fAudioMixingHalf: ${this.fAudioMixingHalf}`;
     }
     getNumOutputs() {
         return this.fInstance.voiceAPI.getNumOutputs(0);
+    }
+
+    /**
+     * Get any scheduled events which occur before the end of the current frame,
+     * along with their sample offset into the current frame so that we know how
+     * to slice up the current buffer to get sample accurate events.
+     */
+    private getEventsInCurrentFrame() {
+        const events: { event: FaustScheduledEvent, sampleOffset: number }[] = [];
+        const currentTime = this.processor.getCurrentTime();
+        const sampleRate = this.processor.getSampleRate();
+        const endOfCurrentFrameSecs = currentTime + (this.fBufferSize / sampleRate);
+
+        while(this.scheduledEvents.length && this.scheduledEvents[0].time < endOfCurrentFrameSecs) {
+            const event = this.scheduledEvents.shift();
+            if (!event) continue;
+
+            events.push({event, sampleOffset: Math.round((event.time - currentTime) * sampleRate)});
+        }
+
+        return events;
     }
 
     private static findPath(o: any, p: string) {
@@ -1021,6 +1104,11 @@ this.fAudioMixingHalf: ${this.fAudioMixingHalf}`;
         else if (cmd === 9) return this.keyOn(channel, data1, data2);
         else super.midiMessage(data);
     };
+
+    scheduleEvent(event: FaustScheduledEvent) {
+        this.scheduledEvents.push(event);
+        this.scheduledEvents.sort((a, b) => a.time - b.time);
+    }
 
     ctrlChange(channel: number, ctrl: number, value: number) {
         if (ctrl === 123 || ctrl === 120) {
